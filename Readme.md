@@ -13,6 +13,13 @@ build program:
     go build
 
 ### Run
+
+
+up 4 memcashed in docker
+    
+    docker-compose up
+
+start program
     
     ./gocurrency
     

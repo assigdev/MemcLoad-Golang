@@ -40,13 +40,9 @@ type InsertApp struct {
 	filename      string
 }
 
-type Statistic struct {
-	processed int64
-	errors    int64
-}
-
-func dotRename(fp string, head string, fn string) {
-		os.Rename(fp, filepath.Join(head, "."+fn))
+func dotRename(fp string) {
+	head, fn := path.Split(fp)
+	os.Rename(fp, filepath.Join(head, "."+fn))
 }
 
 // Create connection to memcached
@@ -151,24 +147,28 @@ func parseAppsinstalled(line string) (*AppsInstalled, error) {
 	}, nil
 }
 
-// File worker
-func worker(
+// Reading file and log statistics
+func fileWorker(
 	file string,
 	insertAppChannels map[string]chan *InsertApp,
-	statisticChan chan *Statistic,
+	workerEndChan chan bool,
 	isProcessedChan chan bool,
 	NormalErrorRate float64) {
 	start := time.Now()
-	statistic := &Statistic{processed: 0, errors: 0}
-
+	processed := 0
+	errorsNum := 0
 	f, err := os.Open(file)
 	if err != nil {
 		log.Println(err)
+		workerEndChan <- true
+		return
 	}
 	defer f.Close()
 	gf, err := gzip.NewReader(f)
 	if err != nil {
 		log.Println(err)
+		workerEndChan <- true
+		return
 	}
 	defer gf.Close()
 	scanner := bufio.NewScanner(gf)
@@ -177,7 +177,7 @@ func worker(
 		appsinstalled, err := parseAppsinstalled(scanner.Text())
 		if err != nil {
 			log.Println(err)
-			statistic.errors += 1
+			errorsNum += 1
 			continue
 		}
 		packed, ua, err := serializeData(appsinstalled)
@@ -189,22 +189,24 @@ func worker(
 
 		isProcessed := <-isProcessedChan
 		if isProcessed {
-			statistic.processed += 1
+			processed += 1
 		} else {
-			statistic.errors += 1
+			errorsNum += 1
 		}
 	}
-	errRate := float64(statistic.errors) / float64(statistic.processed)
+	log.Printf("Worker with file %s end at %s", file, time.Since(start))
+	log.Printf("For  %s file proccessed: %d, errors: %d ", file, processed, errorsNum)
+	errRate := float64(errorsNum) / float64(processed)
 	if errRate < NormalErrorRate {
 		log.Printf("Acceptable error rate (%.3f). Successfull load", errRate)
 	} else {
 		log.Printf("High error rate (%.3f > %.3f). Failed load", errRate, NormalErrorRate)
 	}
-	log.Printf("Worker with file %s end at %s", file, time.Since(start))
-	statisticChan <- statistic
+	workerEndChan <- true
 }
 
 func main() {
+	log.Printf("Programm Start")
 	idfa := flag.String("idfa", "127.0.0.1:33013", "memcash  ip:port for iphone ids")
 	gaid := flag.String("gaid", "127.0.0.1:33014", "memcash  ip:port for android gaid")
 	adid := flag.String("adid", "127.0.0.1:33015", "memcash  ip:port for android adid")
@@ -219,9 +221,6 @@ func main() {
 		"adid": *adid,
 		"dvid": *dvid,
 	}
-	log.Printf("Programm Start")
-	files, _ := filepath.Glob(*pattern)
-	sort.Strings(files)
 	connections := make(map[string]string)
 	connections["idfa"] = *idfa
 	connections["gaid"] = *gaid
@@ -230,33 +229,37 @@ func main() {
 	clients := generateClients(connections)
 
 	isProcessedMap := make(map[string]chan bool)
-	for _, file := range files {
-		isProcessedChan := make(chan bool)
-		isProcessedMap[file] = isProcessedChan
-	}
-	insertAppChannels := make(map[string](chan *InsertApp))
-	for key, client := range clients {
-		insertAppChannels[key] = make(chan *InsertApp, Buffer)
-		go insertAppsWorker(insertAppChannels[key], client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
-	}
-
-	Statistics := make(map[string](chan *Statistic))
-	for _, file := range files {
+	allFiles, _ := filepath.Glob(*pattern)
+	files := make([]string, 0)
+	for _, file := range allFiles {
 		_, fn := path.Split(file)
 		if !strings.HasPrefix(fn, ".") {
-			log.Printf("start worker")
-			statisticChan := make(chan *Statistic)
-			Statistics[file] = statisticChan
-			go worker(file, insertAppChannels, statisticChan, isProcessedMap[file], NormalErrorRate)
-			log.Printf(file)
+			files = append(files, file)
+			isProcessedChan := make(chan bool)
+			isProcessedMap[file] = isProcessedChan
 		}
 	}
-	for _, file := range files{
-		head, fn := path.Split(file)
-		if !strings.HasPrefix(fn, ".") {
-			statistic := <-Statistics[file]
-			log.Printf("For  %s file proccessed: %d, errors: %d ", file, statistic.processed, statistic.errors)
-			dotRename(file, head, fn)
+
+	if len(files) == 0{
+		log.Println("Files not found")
+	} else {
+		sort.Strings(files)
+		insertAppChannels := make(map[string](chan *InsertApp))
+		for key, client := range clients {
+			insertAppChannels[key] = make(chan *InsertApp, Buffer)
+			go insertAppsWorker(insertAppChannels[key], client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
+		}
+		workerEndMap := make(map[string](chan bool))
+		for _, file := range files {
+			log.Printf("start worker")
+			workerEndChan := make(chan bool)
+			workerEndMap[file] = workerEndChan
+			go fileWorker(file, insertAppChannels, workerEndChan, isProcessedMap[file], NormalErrorRate)
+			log.Printf(file)
+		}
+		for _, file := range files {
+			<-workerEndMap[file]
+			dotRename(file)
 		}
 	}
 	log.Printf("Program Exit")
