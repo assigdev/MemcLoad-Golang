@@ -221,12 +221,7 @@ func main() {
 		"adid": *adid,
 		"dvid": *dvid,
 	}
-	connections := make(map[string]string, 4)
-	connections["idfa"] = *idfa
-	connections["gaid"] = *gaid
-	connections["adid"] = *adid
-	connections["dvid"] = *dvid
-	clients := generateClients(connections)
+	clients := generateClients(deviceMemc)
 
 	isProcessedMap := make(map[string]chan bool)
 	allFiles, _ := filepath.Glob(*pattern)
