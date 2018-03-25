@@ -198,9 +198,9 @@ func fileWorker(
 	log.Printf("For  %s file proccessed: %d, errors: %d ", file, processed, errorsNum)
 	errRate := float64(errorsNum) / float64(processed)
 	if errRate < NormalErrorRate {
-		log.Printf("Acceptable error rate (%.3f). Successfull load", errRate)
+		log.Printf("Acceptable error rate (%.5f). Successfull load", errRate)
 	} else {
-		log.Printf("High error rate (%.3f > %.3f). Failed load", errRate, NormalErrorRate)
+		log.Printf("High error rate (%.5f > %.5f). Failed load", errRate, NormalErrorRate)
 	}
 	workerEndChan <- true
 }
@@ -221,7 +221,7 @@ func main() {
 		"adid": *adid,
 		"dvid": *dvid,
 	}
-	connections := make(map[string]string)
+	connections := make(map[string]string, 4)
 	connections["idfa"] = *idfa
 	connections["gaid"] = *gaid
 	connections["adid"] = *adid
