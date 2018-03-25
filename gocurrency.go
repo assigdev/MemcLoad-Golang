@@ -107,12 +107,12 @@ func insertAppsWorker(
 func parseAppsinstalled(line string) (*AppsInstalled, error) {
 	words := strings.Split(strings.TrimSpace(line), "\t")
 	if len(words) < 5 {
-		return nil, errors.New("Invalid string line.")
+		return nil, errors.New("Invalid string line.\t")
 	}
 	devType := words[0]
 	devId := words[1]
 	if len(devType) == 0 || len(devId) == 0 {
-		return nil, errors.New("Don't have divId or devType")
+		return nil, errors.New("Don't have divId or devType\t")
 	}
 	lat, err := strconv.ParseFloat(words[2], 64)
 	if err != nil {
@@ -244,18 +244,17 @@ func main() {
 		log.Println("Files not found")
 	} else {
 		sort.Strings(files)
-		insertAppChannels := make(map[string](chan *InsertApp))
+		insertAppChannels := make(map[string]chan *InsertApp)
 		for key, client := range clients {
 			insertAppChannels[key] = make(chan *InsertApp, Buffer)
 			go insertAppsWorker(insertAppChannels[key], client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
 		}
-		workerEndMap := make(map[string](chan bool))
+		workerEndMap := make(map[string]chan bool)
 		for _, file := range files {
-			log.Printf("start worker")
+			log.Printf("start worker for %s", file)
 			workerEndChan := make(chan bool)
 			workerEndMap[file] = workerEndChan
 			go fileWorker(file, insertAppChannels, workerEndChan, isProcessedMap[file], NormalErrorRate)
-			log.Printf(file)
 		}
 		for _, file := range files {
 			<-workerEndMap[file]
