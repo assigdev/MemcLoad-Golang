@@ -73,36 +73,34 @@ func serializeData(appsinstalled *AppsInstalled) (*[]byte, *appsinstalled_pb2.Us
 	return &packed, &ua, nil
 }
 
-// Worker for connection to memcached
-func insertAppsWorker(
-	insertAppChannel <-chan *InsertApp,
+//  Insert Apps to memcache
+func insertApps(
+	insertApp *InsertApp,
 	client gomemcache.Client,
-	isProcessedMap map[string]chan bool,
 	memcAddr string,
 	retryCount int,
-	dry bool) {
-	for {
-		insertApp := <-insertAppChannel
-		key := fmt.Sprintf("%s:%s", insertApp.appsInstalled.devType, insertApp.appsInstalled.devId)
-		if dry {
-			log.Printf("%s - %s ", memcAddr, key)
-			isProcessedMap[insertApp.filename] <- true
-		} else {
-			item := &gomemcache.Item{Key: key, Flags: 9, Expiration: 60 * 60, Value: []byte(insertApp.packed)}
-			if err := client.Set(item); err != nil {
-				for i:=0; i< retryCount; i++ {
-					if err := client.Set(item); err == nil {
-						isProcessedMap[insertApp.filename] <- true
-						break
-					}
+	dry bool)(bool) {
+	isProcessed := true
+	key := fmt.Sprintf("%s:%s", insertApp.appsInstalled.devType, insertApp.appsInstalled.devId)
+	if dry {
+		log.Printf("%s - %s ", memcAddr, key)
+	} else {
+		item := &gomemcache.Item{Key: key, Flags: 9, Expiration: 60 * 60, Value: []byte(insertApp.packed)}
+		if err := client.Set(item); err != nil {
+			isProcessed = false
+			for i:=0; i< retryCount; i++ {
+				if err := client.Set(item); err == nil {
+					isProcessed =  false
+					break
 				}
-				isProcessedMap[insertApp.filename] <- false
+			}
+			if !isProcessed {
 				log.Printf("Canntot write to: %v ", err)
-			} else {
-				isProcessedMap[insertApp.filename] <- true
 			}
 		}
 	}
+	return isProcessed
+
 }
 
 // Parsed file line and append line data to Appinstalled
@@ -152,10 +150,12 @@ func parseAppsinstalled(line string) (*AppsInstalled, error) {
 // Reading file and log statistics
 func fileWorker(
 	file string,
-	insertAppChannels map[string]chan *InsertApp,
+	clients map[string]*gomemcache.Client,
+	deviceMemc  map[string]string,
 	wg *sync.WaitGroup,
-	isProcessedChan chan bool,
-	NormalErrorRate float64) {
+	NormalErrorRate float64,
+	retryCount int,
+	dry bool) {
 	start := time.Now()
 	processed := 0
 	errorsNum := 0
@@ -185,9 +185,13 @@ func fileWorker(
 			fmt.Println(err)
 		}
 		insertApp := &InsertApp{appsInstalled: *appsinstalled, packed: *packed, ua: *ua, filename: file}
-		insertAppChannels[appsinstalled.devType] <- insertApp
 
-		isProcessed := <-isProcessedChan
+
+		isProcessed := insertApps(
+			insertApp, *clients[appsinstalled.devType],
+			deviceMemc[appsinstalled.devType],
+			retryCount,
+			dry)
 		if isProcessed {
 			processed += 1
 		} else {
@@ -223,15 +227,12 @@ func main() {
 	}
 	clients := generateClients(deviceMemc)
 
-	isProcessedMap := make(map[string]chan bool)
 	allFiles, _ := filepath.Glob(*pattern)
 	files := make([]string, 0)
 	for _, file := range allFiles {
 		_, fn := path.Split(file)
 		if !strings.HasPrefix(fn, ".") {
 			files = append(files, file)
-			isProcessedChan := make(chan bool)
-			isProcessedMap[file] = isProcessedChan
 		}
 	}
 
@@ -239,16 +240,11 @@ func main() {
 		log.Println("Files not found")
 	} else {
 		sort.Strings(files)
-		insertAppChannels := make(map[string]chan *InsertApp)
-		for key, client := range clients {
-			insertAppChannels[key] = make(chan *InsertApp, Buffer)
-			go insertAppsWorker(insertAppChannels[key], *client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
-		}
 		var wg sync.WaitGroup
 		for _, file := range files {
 			log.Printf("start worker for %s", file)
 			wg.Add(1)
-			go fileWorker(file, insertAppChannels, &wg, isProcessedMap[file], NormalErrorRate)
+			go fileWorker(file, clients, deviceMemc,  &wg, NormalErrorRate, *retryCount, *dry)
 		}
 		wg.Wait()
 		for _, file := range files {
