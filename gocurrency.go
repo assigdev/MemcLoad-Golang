@@ -46,14 +46,15 @@ func dotRename(fp string) {
 }
 
 // Create connection to memcached
-func generateClients(connections map[string]string) map[string]gomemcache.Client {
-	var clients = make(map[string]gomemcache.Client)
+func generateClients(connections map[string]string) map[string]*gomemcache.Client {
+	var clients = make(map[string]*gomemcache.Client)
 	for i, addr := range connections {
 		client, err := gomemcache.NewClient([]string{addr})
 		if err != nil {
 			log.Fatalf("init client error: %v", err)
 		}
-		clients[i] = *client
+		client.SetMaxIdleConns(10)
+		clients[i] = client
 	}
 	return clients
 }
@@ -242,7 +243,7 @@ func main() {
 		insertAppChannels := make(map[string]chan *InsertApp)
 		for key, client := range clients {
 			insertAppChannels[key] = make(chan *InsertApp, Buffer)
-			go insertAppsWorker(insertAppChannels[key], client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
+			go insertAppsWorker(insertAppChannels[key], *client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
 		}
 		workerEndMap := make(map[string]chan bool)
 		for _, file := range files {
