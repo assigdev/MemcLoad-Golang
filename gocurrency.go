@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -152,7 +153,7 @@ func parseAppsinstalled(line string) (*AppsInstalled, error) {
 func fileWorker(
 	file string,
 	insertAppChannels map[string]chan *InsertApp,
-	workerEndChan chan bool,
+	wg *sync.WaitGroup,
 	isProcessedChan chan bool,
 	NormalErrorRate float64) {
 	start := time.Now()
@@ -161,15 +162,13 @@ func fileWorker(
 	f, err := os.Open(file)
 	if err != nil {
 		log.Println(err)
-		workerEndChan <- true
-		return
+		wg.Done()
 	}
 	defer f.Close()
 	gf, err := gzip.NewReader(f)
 	if err != nil {
 		log.Println(err)
-		workerEndChan <- true
-		return
+		wg.Done()
 	}
 	defer gf.Close()
 	scanner := bufio.NewScanner(gf)
@@ -203,7 +202,7 @@ func fileWorker(
 	} else {
 		log.Printf("High error rate (%.5f > %.5f). Failed load", errRate, NormalErrorRate)
 	}
-	workerEndChan <- true
+	wg.Done()
 }
 
 func main() {
@@ -245,15 +244,14 @@ func main() {
 			insertAppChannels[key] = make(chan *InsertApp, Buffer)
 			go insertAppsWorker(insertAppChannels[key], *client, isProcessedMap, deviceMemc[key], *retryCount, *dry)
 		}
-		workerEndMap := make(map[string]chan bool)
+		var wg sync.WaitGroup
 		for _, file := range files {
 			log.Printf("start worker for %s", file)
-			workerEndChan := make(chan bool)
-			workerEndMap[file] = workerEndChan
-			go fileWorker(file, insertAppChannels, workerEndChan, isProcessedMap[file], NormalErrorRate)
+			wg.Add(1)
+			go fileWorker(file, insertAppChannels, &wg, isProcessedMap[file], NormalErrorRate)
 		}
+		wg.Wait()
 		for _, file := range files {
-			<-workerEndMap[file]
 			dotRename(file)
 		}
 	}
