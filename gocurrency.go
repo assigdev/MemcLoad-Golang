@@ -74,33 +74,35 @@ func serializeData(appsinstalled *AppsInstalled) (*[]byte, *appsinstalled_pb2.Us
 }
 
 //  Insert Apps to memcache
-func insertApps(
-	insertApp *InsertApp,
+func insertAppsWorker(
+	insertAppChannel <-chan *InsertApp,
 	client gomemcache.Client,
 	memcAddr string,
 	retryCount int,
-	dry bool)(bool) {
-	isProcessed := true
-	key := fmt.Sprintf("%s:%s", insertApp.appsInstalled.devType, insertApp.appsInstalled.devId)
-	if dry {
-		log.Printf("%s - %s ", memcAddr, key)
-	} else {
-		item := &gomemcache.Item{Key: key, Flags: 9, Expiration: 60 * 60, Value: []byte(insertApp.packed)}
-		if err := client.Set(item); err != nil {
-			isProcessed = false
-			for i:=0; i< retryCount; i++ {
-				if err := client.Set(item); err == nil {
-					isProcessed =  false
-					break
+	dry bool) {
+
+	for insertApp := range insertAppChannel {
+		isProcessed := true
+		key := fmt.Sprintf("%s:%s", insertApp.appsInstalled.devType, insertApp.appsInstalled.devId)
+		if dry {
+			log.Printf("%s - %s ", memcAddr, key)
+		} else {
+			item := &gomemcache.Item{Key: key, Flags: 9, Expiration: 60 * 60, Value: []byte(insertApp.packed)}
+			if err := client.Set(item); err != nil {
+				isProcessed = false
+				for i := 0; i < retryCount; i++ {
+					if err := client.Set(item); err == nil {
+						isProcessed = true
+						break
+					}
 				}
-			}
-			if !isProcessed {
-				log.Printf("Canntot write to: %v ", err)
+				if !isProcessed {
+					log.Printf("Canntot write to: %v ", err)
+				}
 			}
 		}
 	}
-	return isProcessed
-
+	log.Println("end of appinserting eeeeeeeee")
 }
 
 // Parsed file line and append line data to Appinstalled
@@ -150,25 +152,22 @@ func parseAppsinstalled(line string) (*AppsInstalled, error) {
 // Reading file and log statistics
 func fileWorker(
 	file string,
-	clients map[string]*gomemcache.Client,
-	deviceMemc  map[string]string,
+	insertAppChannels map[string]chan *InsertApp,
 	wg *sync.WaitGroup,
-	NormalErrorRate float64,
-	retryCount int,
-	dry bool) {
+	NormalErrorRate float64) {
 	start := time.Now()
-	processed := 0
+	processedNum := 0
 	errorsNum := 0
+	insertAppErrorsNum := 0
+	defer wg.Done()
 	f, err := os.Open(file)
 	if err != nil {
 		log.Println(err)
-		wg.Done()
 	}
 	defer f.Close()
 	gf, err := gzip.NewReader(f)
 	if err != nil {
 		log.Println(err)
-		wg.Done()
 	}
 	defer gf.Close()
 	scanner := bufio.NewScanner(gf)
@@ -182,31 +181,26 @@ func fileWorker(
 		}
 		packed, ua, err := serializeData(appsinstalled)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
+			errorsNum += 1
+			continue
 		}
 		insertApp := &InsertApp{appsInstalled: *appsinstalled, packed: *packed, ua: *ua, filename: file}
-
-
-		isProcessed := insertApps(
-			insertApp, *clients[appsinstalled.devType],
-			deviceMemc[appsinstalled.devType],
-			retryCount,
-			dry)
-		if isProcessed {
-			processed += 1
-		} else {
-			errorsNum += 1
-		}
+		insertAppChannels[appsinstalled.devType] <- insertApp
+		processedNum += 1
 	}
+
+	errorsNum += insertAppErrorsNum
+	processedNum -= insertAppErrorsNum
+
 	log.Printf("Worker with file %s end at %s", file, time.Since(start))
-	log.Printf("For  %s file proccessed: %d, errors: %d ", file, processed, errorsNum)
-	errRate := float64(errorsNum) / float64(processed)
+	log.Printf("For  %s file proccessed: %d, errors: %d ", file, processedNum, errorsNum)
+	errRate := float64(errorsNum) / float64(processedNum)
 	if errRate < NormalErrorRate {
 		log.Printf("Acceptable error rate (%.5f). Successfull load", errRate)
 	} else {
 		log.Printf("High error rate (%.5f > %.5f). Failed load", errRate, NormalErrorRate)
 	}
-	wg.Done()
 }
 
 func main() {
@@ -236,20 +230,27 @@ func main() {
 		}
 	}
 
-	if len(files) == 0{
+	if len(files) == 0 {
 		log.Println("Files not found")
-	} else {
-		sort.Strings(files)
-		var wg sync.WaitGroup
-		for _, file := range files {
-			log.Printf("start worker for %s", file)
-			wg.Add(1)
-			go fileWorker(file, clients, deviceMemc,  &wg, NormalErrorRate, *retryCount, *dry)
+		log.Printf("Program Exit")
+		os.Exit(3)
+
+	}
+	insertAppChannels := make(map[string](chan *InsertApp))
+	for key, client := range clients {
+		insertAppChannels[key] = make(chan *InsertApp, Buffer)
+		go insertAppsWorker(insertAppChannels[key], *client, deviceMemc[key], *retryCount, *dry)
 		}
-		wg.Wait()
-		for _, file := range files {
-			dotRename(file)
-		}
+	sort.Strings(files)
+	var wg sync.WaitGroup
+	for _, file := range files {
+		log.Printf("start worker for %s", file)
+		wg.Add(1)
+		go fileWorker(file, insertAppChannels, &wg, NormalErrorRate)
+	}
+	wg.Wait()
+	for _, file := range files {
+		dotRename(file)
 	}
 	log.Printf("Program Exit")
 }
