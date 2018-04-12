@@ -102,7 +102,6 @@ func insertAppsWorker(
 			}
 		}
 	}
-	log.Println("end of appinserting eeeeeeeee")
 }
 
 // Parsed file line and append line data to Appinstalled
@@ -158,7 +157,6 @@ func fileWorker(
 	start := time.Now()
 	processedNum := 0
 	errorsNum := 0
-	insertAppErrorsNum := 0
 	defer wg.Done()
 	f, err := os.Open(file)
 	if err != nil {
@@ -189,9 +187,6 @@ func fileWorker(
 		insertAppChannels[appsinstalled.devType] <- insertApp
 		processedNum += 1
 	}
-
-	errorsNum += insertAppErrorsNum
-	processedNum -= insertAppErrorsNum
 
 	log.Printf("Worker with file %s end at %s", file, time.Since(start))
 	log.Printf("For  %s file proccessed: %d, errors: %d ", file, processedNum, errorsNum)
@@ -234,7 +229,6 @@ func main() {
 		log.Println("Files not found")
 		log.Printf("Program Exit")
 		os.Exit(3)
-
 	}
 	insertAppChannels := make(map[string](chan *InsertApp))
 	for key, client := range clients {
